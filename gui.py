@@ -91,7 +91,8 @@ class Runner:
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('utau2vocaloid')
+        from u2v import __version__
+        self.title('utau2vocaloid ' + __version__)
         self.geometry('900x760')
         self.minsize(760, 600)
         self.runner = Runner(self)

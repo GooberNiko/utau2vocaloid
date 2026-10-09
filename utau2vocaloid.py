@@ -26,6 +26,8 @@ DEFAULT_DICTS = {
 def main():
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    from u2v import __version__
+    ap.add_argument('--version', action='version', version='utau2vocaloid ' + __version__)
     sub = ap.add_subparsers(dest='cmd', required=True)
     c = sub.add_parser('convert', help='convert an UTAU bank')
     c.add_argument('bank', help='UTAU voicebank folder (searched recursively for oto.ini)')
