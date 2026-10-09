@@ -86,10 +86,25 @@ def main():
             print('error: %s has no dictionary.txt. Convert the bank (again) first; the convert step writes it '
                   'from the devkit\'s phonetic dictionary.' % a.out)
             return 2
-        d = dbtool_io.load_dictionary(os.path.join(a.out, 'dictionary.txt'))
+        dpath = os.path.join(a.out, 'dictionary.txt')
+        d = dbtool_io.load_dictionary(dpath)
+        used = set()
+        for fn in os.listdir(a.out):
+            if fn.endswith('.trans'):
+                used.update(dbtool_io.read_trans(os.path.join(a.out, fn))[0])
+        extra = {p: v for p, v in {**P.JA_EXTRA, **P.EXTRA_DICT}.items() if p in used and p not in d}
+        if extra:
+            # e.g. the devkit's own dictionary copied in by hand: it lacks b, b', p\' (and extras)
+            print('dictionary.txt lacks %s: adding them' % '  '.join(sorted(extra)))
+            d = dbtool_io.extend_dictionary(d, extra)
+            dbtool_io.write_dictionary(dpath, d)
+            d = dbtool_io.load_dictionary(dpath)
         errs = dbtool_io.validate_folder(a.out, d)
         if errs:
-            print('the folder has %d problems, run validate first' % len(errs))
+            print('the folder has %d problems:' % len(errs))
+            for e in errs[:15]:
+                print('  ' + e)
+            print('convert the bank again (with the devkit dictionary) and build again')
             return 1
         try:
             failed = dbtool_build.build(a.dbtool, a.out, a.db, a.name, language=a.language)

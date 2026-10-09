@@ -23,6 +23,13 @@ class DBToolError(RuntimeError):
     pass
 
 
+def _finished(cell):
+    """An "added" cell is done once it says YES (or an error): while the DBTool is still working on a row
+    it shows "...1", and closing then cut the last articulation off on slower PCs."""
+    t = cell.strip()
+    return bool(t) and not t.startswith('...')
+
+
 class DBToolHandoff(DBToolError):
     """The automation got stuck; the DBTool is left open with its files so the user can finish by hand."""
 
@@ -247,9 +254,9 @@ class DBTool:
         rows = self._select(COL_STAT_TO_ADD)
         self.log('adding %d stationaries' % len(rows))
         if rows:
-            self._run(ADD_STAT, lambda: all(self._col(COL_STAT_ADDED)[i] for i in rows) or None, 1800,
+            self._run(ADD_STAT, lambda: all(_finished(self._col(COL_STAT_ADDED)[i]) for i in rows) or None, 1800,
                       'Add Stationaries To Database',
-                      progress=lambda: sum(1 for i in rows if self._col(COL_STAT_ADDED)[i]))
+                      progress=lambda: sum(1 for i in rows if _finished(self._col(COL_STAT_ADDED)[i])))
             time.sleep(5)                        # it keeps saving for a moment after the list says YES
 
     def optimize_epr(self):
@@ -265,7 +272,7 @@ class DBTool:
 
         def done():
             added = self._col(COL_ART_ADDED)
-            n = sum(1 for i in rows if added[i])
+            n = sum(1 for i in rows if _finished(added[i]))
             if n != last[0] and time.time() - last[1] > 30:
                 self.log('  %d/%d' % (n, len(rows)))
                 last[1] = time.time()
@@ -339,6 +346,8 @@ def build(exe, seg_folder, db_path, name=None, dictionary=None, language='Japane
             return failed
         log('the DBTool analysed %d unit(s) an octave off (%s): raising their fundamental and rebuilding'
             % (len(bad), ', '.join('[%s]' % ' '.join(k[1:]) for k in sorted(bad))))
+        log('>>> pass 2 of 2: the DBTool closes and opens again and repeats every step. This is normal, '
+            "it's not a crash: let it finish.")
         boosted.update(new)
         _remove_db(db_path)
 

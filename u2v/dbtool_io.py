@@ -42,7 +42,8 @@ def load_dictionary_txt(path):
             group = None
             continue
         if group is not None:
-            ph = line.strip()
+            # "p\\'" (copied from an escaped error message) is the phoneme p\': no phoneme has "\\"
+            ph = line.strip().replace('\\\\', '\\')
             d.voiced[ph] = voiced
             d.groups[ph] = group
     return d
@@ -435,7 +436,7 @@ def validate_folder(folder, dictionary=None, sample_rate=44100):
             if dictionary is not None:
                 bad = [p for p in phonemes if p not in dictionary]
                 if bad:
-                    raise ValueError('phonemes not in dictionary: %s' % bad)
+                    raise ValueError('phonemes not in dictionary: %s' % '  '.join(bad))
             kinds = {len(u) == 1 for u, _ in directives}
             if len(kinds) > 1:
                 raise ValueError('mixes stationaries and articulations')
