@@ -216,10 +216,28 @@ class DBTool:
 
     def open_auto_segmentation(self):
         self._menu(CMD_AUTO_SEG)
-        for k in range(2):                       # wavefile folder, then toolkit folder (both from the ini)
-            dlg = self._dialog('Browse for Files or Folders', timeout=60)
-            time.sleep(1)
-            self._confirm_folder(dlg, (self.seg_folder, self.work)[k], ('wave files', 'toolkit')[k])
+        # Usually it asks for the wave-file folder, then the toolkit folder (both from the ini); some
+        # DBTool installs skip those windows and open the list straight away. Handle whichever shows up.
+        asked = 0
+        t0 = time.time()
+        while True:
+            vis = [w for w in self.app.windows() if w.is_visible()]
+            if any(w.window_text() == AUTO_DLG for w in vis):
+                break
+            browse = [w for w in vis if w.window_text() == 'Browse for Files or Folders']
+            if browse:
+                time.sleep(1)
+                k = min(asked, 1)
+                self._confirm_folder(self.app.window(handle=browse[0].handle), (self.seg_folder, self.work)[k],
+                                     ('wave files', 'toolkit')[k])
+                asked += 1
+                continue
+            if not self._alive():
+                raise DBToolError('the DBTool exited while opening Automatic Segmentation')
+            if time.time() - t0 > 900:
+                raise DBToolError('timed out waiting for the Automatic Segmentation window. On screen: %s'
+                                  % self._describe())
+            time.sleep(0.5)
         self.dlg = self._dialog(AUTO_DLG, timeout=600)
         self.dlg_handle = self.dlg.handle
         self.lv = self.dlg.child_window(control_id=LIST).wrapper_object()
