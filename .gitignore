@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# never commit Yamaha's devkit or anything it made
+*.exe
+*.dll
+VocaloidDBTool.ini
+*.dat
+*.tree
+*.ddb
+*.ddi
+*.msd
+*.aic
+expdb/
+*Dictionary*/
+
+# voice audio and converted / built banks
+*.wav
+*.trans
+*.seg
+*.as[0-9]*
+*.frq
+*.llsm
+*_seg/
+manifest.csv
+report.txt
+dictionary.txt
+singer.inf
+epr_templates.txt

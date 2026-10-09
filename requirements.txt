@@ -1,0 +1,4 @@
+numpy>=1.24
+# only for "build" (driving the DBTool on Windows)
+pywinauto>=0.6.8; sys_platform == "win32"
+pywin32>=306; sys_platform == "win32"
