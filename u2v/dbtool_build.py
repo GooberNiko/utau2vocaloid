@@ -5,6 +5,7 @@ touched: New singer database (from dictionary.txt) -> Automatic Segmentation -> 
 optimize EpR guides -> add articulations -> exit.
 """
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -21,6 +22,27 @@ AUTO_DLG = 'Automatic Database Creation Dialog'
 
 class DBToolError(RuntimeError):
     pass
+
+
+def _decode(name):
+    return re.sub(r'%(\d+)%', lambda m: chr(int(m.group(1))), name)
+
+
+def expected_units(seg_folder):
+    """(articulation pairs, stationary phonemes) the converted folder will add, from its .as files."""
+    from . import dbtool_io
+    art, stat = set(), set()
+    for fn in os.listdir(seg_folder):
+        if re.search(r'\.as\d+$', fn):
+            try:
+                a = dbtool_io.read_as(os.path.join(seg_folder, fn))
+            except Exception:                     # noqa: BLE001 - validate reports broken files
+                continue
+            if len(a.phns) == 1:
+                stat.add(a.phns[0])
+            else:
+                art.add(tuple(a.phns))
+    return art, stat
 
 
 def _finished(cell):
@@ -50,6 +72,7 @@ class DBTool:
         import win32gui
         self._gui, self._con = win32gui, win32con
         self.log = log
+        self.seg_folder = os.path.abspath(seg_folder)
         self.work = tempfile.mkdtemp(prefix='dbtool_')
         shutil.copy(exe, self.work)
         with open(os.path.join(self.work, 'VocaloidDBTool.ini'), 'w', newline='\r\n') as f:
@@ -141,11 +164,13 @@ class DBTool:
             raise DBToolError('language %r not offered by the DBTool (it lists %s)' % (language, items))
         box.select(match[0])
         self._ok(dlg, 'Select language')
-        self._wait(lambda: os.path.exists(os.path.abspath(db_path) + '.tree'), 30, 'the new DB files')
+        self._wait(lambda: os.path.exists(os.path.abspath(db_path) + '.tree'), 120, 'the new DB files')
+        self.db_path = os.path.abspath(db_path)
 
     def load_db(self, db_path):
         """File > Load singer database (singer.inf), quick load."""
         self._menu(471)
+        self.db_path = os.path.abspath(db_path)
         self._file_dialog('Open singer database', os.path.join(os.path.abspath(db_path), 'singer.inf'))
         dlg = self._dialog('Rebuild Database Tree Structure', timeout=60)
         time.sleep(1)
@@ -161,12 +186,40 @@ class DBTool:
             self.app.kill()
         shutil.rmtree(self.work, ignore_errors=True)
 
+    def _confirm_folder(self, dlg, path, what):
+        """OK a "Browse for Files or Folders" window. On some PCs a posted OK is ignored (no folder
+        selected yet): type the path in, press OK every way we can, and in the end wait for the user to
+        press it (the build used to give up after 25 s and close the DBTool)."""
+        h = dlg.handle
+        try:
+            edits = [c for c in dlg.descendants() if c.class_name() == 'Edit' and c.is_visible()]
+            if edits:
+                edits[0].set_edit_text(path)
+        except Exception:                         # noqa: BLE001 - no edit box in this version
+            pass
+        tries = [lambda: self._gui.PostMessage(h, self._con.WM_COMMAND, 1, 0),
+                 lambda: dlg.child_window(control_id=1).click(),
+                 lambda: dlg.type_keys('{ENTER}', set_foreground=True)]
+        for k, press in enumerate(tries * 2):
+            try:
+                press()
+            except Exception:                     # noqa: BLE001
+                pass
+            for _ in range(10):
+                time.sleep(0.5)
+                if not self._gui.IsWindow(h) or not self._gui.IsWindowVisible(h):
+                    return
+        self.log('>>> please press OK (or Enter) in the DBTool\'s "Browse for Files or Folders" window (%s: %s)'
+                 % (what, path))
+        self._wait(lambda: not self._gui.IsWindow(h) or not self._gui.IsWindowVisible(h), 600,
+                   'you to press OK in the folder window')
+
     def open_auto_segmentation(self):
         self._menu(CMD_AUTO_SEG)
-        for _ in range(2):                       # wavefile folder, then toolkit folder (both from the ini)
-            dlg = self._dialog('Browse for Files or Folders')
+        for k in range(2):                       # wavefile folder, then toolkit folder (both from the ini)
+            dlg = self._dialog('Browse for Files or Folders', timeout=60)
             time.sleep(1)
-            self._ok(dlg, 'folder dialog')
+            self._confirm_folder(dlg, (self.seg_folder, self.work)[k], ('wave files', 'toolkit')[k])
         self.dlg = self._dialog(AUTO_DLG, timeout=600)
         self.dlg_handle = self.dlg.handle
         self.lv = self.dlg.child_window(control_id=LIST).wrapper_object()
@@ -183,8 +236,22 @@ class DBTool:
                     raise
                 time.sleep(2)
 
+    def _select_all_keys(self):
+        """Select every row with the keyboard (Home, Shift+End): needs no access to the list's memory."""
+        try:
+            self.lv.set_focus()
+            self.lv.type_keys('{HOME}+{END}', set_foreground=True)
+            time.sleep(1)
+        except Exception as ex:                   # noqa: BLE001
+            raise DBToolError('could not select the rows (%s)' % ex)
+        return list(range(self.rows))
+
     def _select(self, col):
-        rows = [i for i, t in enumerate(self._col(col)) if t]
+        try:
+            rows = [i for i, t in enumerate(self._col(col)) if t]
+        except Exception as ex:                   # noqa: BLE001 - some PCs can't read another program's list
+            self.log('  could not read the list (%s): selecting every row' % ex)
+            return self._select_all_keys()
         for attempt in range(3):
             for i in range(self.rows):
                 self.lv.deselect(i)
@@ -199,7 +266,8 @@ class DBTool:
                 return rows
             self.log('  selected %d of %d rows, selecting again' % (n, len(rows)))
             time.sleep(2)
-        raise DBToolError('could not select the rows in the segmentation list')
+        self.log('  selecting rows one by one did not work: selecting every row')
+        return self._select_all_keys()
 
     def _press(self, button):
         """Press a dialog button with its WM_COMMAND: works whether or not the window has focus (a
@@ -250,14 +318,47 @@ class DBTool:
             if time.time() - t > timeout:
                 raise DBToolError('timed out during: %s' % what)
 
+    def _db_units(self, kind):
+        """Units already written to the DB folder: {pair or phoneme: (bytes, mtime)}. The DBTool writes one
+        file per unit (voice/articulation/<p1>/<p2>, voice/stationary/normal/<p>/<n>), so this shows
+        progress without reading its window (which fails on some PCs and is slow for big banks)."""
+        base = os.path.join(self.db_path, 'voice', kind)
+        out = {}
+        for dp, _, files in os.walk(base):
+            for fn in files:
+                if fn.endswith('.dat'):
+                    continue
+                f = os.path.join(dp, fn)
+                parts = [_decode(x) for x in os.path.relpath(f, base).split(os.sep)]
+                key = tuple(parts) if kind == 'articulation' else parts[1] if len(parts) > 2 else parts[0]
+                try:
+                    st = os.stat(f)
+                except OSError:
+                    continue
+                b, m = out.get(key, (0, 0))
+                out[key] = (b + st.st_size, max(m, st.st_mtime))
+        return out
+
+    def _files_done(self, kind, expected, quiet=20):
+        """Every expected unit is in the DB and nothing has been written for `quiet` seconds."""
+        got = self._db_units(kind)
+        if any(u not in got for u in expected):
+            return None
+        last = max((m for _, m in got.values()), default=0)
+        return (time.time() - last > quiet) or None
+
+    def _files_progress(self, kind):
+        got = self._db_units(kind)
+        return (len(got), sum(b for b, _ in got.values()))
+
     def add_stationaries(self):
         rows = self._select(COL_STAT_TO_ADD)
         self.log('adding %d stationaries' % len(rows))
         if rows:
-            self._run(ADD_STAT, lambda: all(_finished(self._col(COL_STAT_ADDED)[i]) for i in rows) or None, 1800,
-                      'Add Stationaries To Database',
-                      progress=lambda: sum(1 for i in rows if _finished(self._col(COL_STAT_ADDED)[i])))
-            time.sleep(5)                        # it keeps saving for a moment after the list says YES
+            exp = self.expected_stat
+            self._run(ADD_STAT, lambda: self._files_done('stationary', exp, quiet=10), 3 * 3600,
+                      'Add Stationaries To Database', progress=lambda: self._files_progress('stationary'), stall=300)
+            time.sleep(5)                        # it keeps saving for a moment after the last file
 
     def optimize_epr(self):
         btn = self.dlg.child_window(control_id=OPT_EPR)
@@ -267,21 +368,23 @@ class DBTool:
 
     def add_articulations(self):
         rows = self._select(COL_ART_TO_ADD)
-        self.log('adding %d articulation files' % len(rows))
+        exp = self.expected_art
+        self.log('adding %d articulation files (%d units)' % (len(rows), len(exp)))
         last = [0, time.time()]
 
         def done():
-            added = self._col(COL_ART_ADDED)
-            n = sum(1 for i in rows if _finished(added[i]))
+            n = sum(1 for u in self._db_units('articulation') if u in exp)
             if n != last[0] and time.time() - last[1] > 30:
-                self.log('  %d/%d' % (n, len(rows)))
+                self.log('  %d/%d units' % (n, len(exp)))
                 last[1] = time.time()
             last[0] = n
-            return n >= len(rows) or None
+            return self._files_done('articulation', exp)
         if rows:
-            self._run(ADD_ART, done, 4 * 3600, 'Add Articulations To Database', progress=lambda: last[0], stall=300)
-        failed = [i for i in rows if not self._col(COL_ART_ADDED)[i].upper().startswith('YES')]
-        return failed
+            # big banks on slow PCs take hours: no overall limit, only "nothing written for 10 minutes"
+            self._run(ADD_ART, done, 24 * 3600, 'Add Articulations To Database',
+                      progress=lambda: self._files_progress('articulation'), stall=600)
+        have = self._db_units('articulation')
+        return sorted(' '.join(u) for u in exp if u not in have)
 
     def close(self):
         try:
@@ -409,6 +512,7 @@ def _build(exe, seg_folder, db_path, name, dictionary, language, log):
             t.quit()
         log('EVEC: renamed %d phoneme entries' % dbtool_io.patch_evec_names(os.path.abspath(db_path)))
         t = DBTool(exe, seg_folder, log)
+    t.expected_art, t.expected_stat = expected_units(seg_folder)
     step = 'creating the DB'
     try:
         if evec:
@@ -424,10 +528,16 @@ def _build(exe, seg_folder, db_path, name, dictionary, language, log):
         step = 'Add Articulations To Database'
         failed = t.add_articulations()
     except DBToolError as ex:
-        if step.startswith(('Add', 'Optimize')) and t._alive():
+        if step.startswith(('Add', 'Optimize', 'opening')) and t._alive():
             # Leave the DBTool open on its list (and its files in place): the user can finish by hand.
             # Closing it here used to delete the folder it was building from, so that failed too.
             log('%s' % ex)
+            raise DBToolHandoff(HANDOFF % (step, os.path.abspath(db_path), seg_folder)) from ex
+        t.close()
+        raise
+    except Exception as ex:
+        if step.startswith(('Add', 'Optimize', 'opening')) and t._alive():
+            log('%s' % ex)                       # same: don't pull the DBTool away mid-way
             raise DBToolHandoff(HANDOFF % (step, os.path.abspath(db_path), seg_folder)) from ex
         t.close()
         raise
