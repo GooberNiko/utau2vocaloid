@@ -17,10 +17,15 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from u2v import convert, dbtool_io, phonemes as P  # noqa: E402
 
 DEVKIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_DICTS = {
-    'ja': os.path.join(DEVKIT, 'Japanese Dictionary', 'Japanese_Dictionary.txt'),
-    'en': os.path.join(DEVKIT, 'English Dictionary', 'english_phonetic_dictionary_20061220.txt'),
-}
+NO_DICT = '''could not find the VOCALOID3 phonetic dictionary for %s.
+It comes with the DBTool devkit: "Japanese Dictionary\\Japanese_Dictionary.txt" (English:
+"English Dictionary\\english_phonetic_dictionary_20061220.txt"). Either put the utau2vocaloid folder inside
+the devkit folder (next to VocaloidDBTool3.exe), or point at the file with --dict "...\\Japanese_Dictionary.txt".'''
+
+
+def default_dict(lang):
+    """The devkit dictionary for lang: next to this folder, in the devkit around it, or in the working folder."""
+    return dbtool_io.find_dictionary(lang, [DEVKIT, os.getcwd(), os.path.dirname(DEVKIT)])
 
 
 def main():
@@ -77,12 +82,20 @@ def main():
 
     if a.cmd == 'build':
         from u2v import dbtool_build
+        if not os.path.exists(os.path.join(a.out, 'dictionary.txt')):
+            print('error: %s has no dictionary.txt. Convert the bank (again) first; the convert step writes it '
+                  'from the devkit\'s phonetic dictionary.' % a.out)
+            return 2
         d = dbtool_io.load_dictionary(os.path.join(a.out, 'dictionary.txt'))
         errs = dbtool_io.validate_folder(a.out, d)
         if errs:
             print('the folder has %d problems, run validate first' % len(errs))
             return 1
-        failed = dbtool_build.build(a.dbtool, a.out, a.db, a.name, language=a.language)
+        try:
+            failed = dbtool_build.build(a.dbtool, a.out, a.db, a.name, language=a.language)
+        except dbtool_build.DBToolError as ex:
+            print('error: %s' % ex)
+            return 1
         print('DB built: %s%s' % (a.db, '' if not failed else ' (%d files not added)' % len(failed)))
         return 1 if failed else 0
 
@@ -92,16 +105,21 @@ def main():
                                  splice=not a.no_splice, normalize=not a.no_normalize,
                                  brighten={k: float(v) for k, v in (b.split('=') for b in a.brighten)},
                                  avoid=a.avoid, extras=not a.no_extras)
-        dpath = a.dict or DEFAULT_DICTS.get(conv.lang)
-        if dpath and os.path.exists(dpath):
+        dpath = a.dict or default_dict(conv.lang)
+        if a.dict and not os.path.exists(a.dict):
+            print('error: --dict %s does not exist' % a.dict)
+            return 2
+        if not dpath:
+            # without it no dictionary.txt is written and the DB can't be built: stop here, loudly
+            print('error: ' + NO_DICT % {'ja': 'Japanese', 'en': 'English'}.get(conv.lang, conv.lang))
+            return 2
+        if dpath:
             conv.dict = dbtool_io.load_dictionary(dpath)
             if conv.lang == 'ja' and not a.no_extend_dict:
                 conv.dict = dbtool_io.extend_dictionary(conv.dict, P.JA_EXTRA)
             if conv.extras_found:              # breaths, rolled r: phonemes the stock dictionaries lack
                 conv.dict = dbtool_io.extend_dictionary(conv.dict, {p: P.EXTRA_DICT[p] for p in conv.extras_found})
             print('dictionary: %s (%d phonemes)' % (dpath, len(conv.dict.voiced)))
-        else:
-            print('warning: no phonetic dictionary, phonemes are not checked')
         conv.run()
         errs = dbtool_io.validate_folder(a.out, conv.dict_out)
         print('validation: %s' % ('OK' if not errs else '%d problems' % len(errs)))
@@ -112,9 +130,14 @@ def main():
 
     # the folder's own dictionary.txt is what the DB gets built from (it has b, b', p' and EVEC phonemes)
     own = os.path.join(a.out, 'dictionary.txt')
-    dpath = a.dict or (own if os.path.exists(own) else DEFAULT_DICTS.get(a.lang))
+    dpath = a.dict or (own if os.path.exists(own) else default_dict(a.lang))
     d = dbtool_io.load_dictionary(dpath) if dpath and os.path.exists(dpath) else None
     errs = dbtool_io.validate_folder(a.out, d)
+    if d is None:
+        errs.append('no dictionary.txt and no devkit dictionary found: phonemes not checked, and the DB '
+                    "can't be built from this folder. Convert again (see the convert step's error).")
+    elif not os.path.exists(own):
+        errs.append('no dictionary.txt in the folder: convert again before building')
     for e in errs:
         print(e)
     print('OK' if not errs else '%d problems' % len(errs))

@@ -167,6 +167,59 @@ def db_pitches(db_path):
     return out
 
 
+DICT_NAMES = {'ja': ('Japanese Dictionary', 'Japanese_Dictionary.txt'),
+              'en': ('English Dictionary', 'english_phonetic_dictionary_20061220.txt')}
+
+
+def dictionary_language(path):
+    """'ja', 'en' or None for a DBTool phonetic dictionary .txt (by name, then by its phonemes)."""
+    import os
+    name = os.path.basename(path).lower()
+    if 'japan' in name or name.startswith(('ja_', 'jp')):
+        return 'ja'
+    if 'english' in name or name.startswith('en_'):
+        return 'en'
+    try:
+        txt = open(path, encoding='latin-1').read(20000)
+    except OSError:
+        return None
+    if 'phonetic_group(' not in txt:
+        return None
+    phs = {ln.strip() for ln in txt.splitlines() if ln.startswith('\t')}
+    if 'N\\' in phs and 'M' in phs:
+        return 'ja'
+    if '@' in phs and 'Q' in phs:
+        return 'en'
+    return None
+
+
+def find_dictionary(lang, roots):
+    """The devkit's phonetic dictionary .txt for lang ('ja' / 'en'): the usual place in each root first
+    (<root>/Japanese Dictionary/Japanese_Dictionary.txt), then any dictionary .txt up to three folders
+    deep. None if there is none."""
+    import os
+    roots = [os.path.abspath(r) for r in roots if r and os.path.isdir(r)]
+    folder, fname = DICT_NAMES.get(lang, (None, None))
+    for r in roots:
+        if folder and os.path.exists(os.path.join(r, folder, fname)):
+            return os.path.join(r, folder, fname)
+    found = []
+    for r in roots:
+        base = r.count(os.sep)
+        for dp, dn, fn in os.walk(r):
+            if dp.count(os.sep) - base >= 3:
+                dn[:] = []
+            dn[:] = [d for d in dn if not d.endswith('_seg') and d not in ('render_tests', '__pycache__', '.git')]
+            for f in fn:
+                if f.lower().endswith('.txt') and f.lower() != 'dictionary.txt' \
+                        and dictionary_language(os.path.join(dp, f)) == lang:
+                    found.append(os.path.join(dp, f))
+        if found:
+            break
+    # the plain one over variants ("Japanese_Dictionary.txt" before "Japanese_Dictionary_b.txt")
+    return min(found, key=lambda f: (len(os.path.basename(f)), f)) if found else None
+
+
 def load_dictionary(path):
     if path.lower().endswith(('.dat', '.tree')):
         return load_dictionary_dat(path)

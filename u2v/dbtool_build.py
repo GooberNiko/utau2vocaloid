@@ -23,6 +23,19 @@ class DBToolError(RuntimeError):
     pass
 
 
+class DBToolHandoff(DBToolError):
+    """The automation got stuck; the DBTool is left open with its files so the user can finish by hand."""
+
+
+HANDOFF = '''The DBTool got stuck at "%s", so it was left open for you to finish by hand:
+  in the "Automatic Segmentation" window select every row (click the first, shift+click the last), then press
+  1. Add Stationaries To Database   (wait until the "added" column says Yes everywhere)
+  2. Optimize EpR Guides
+  3. Add Articulations To Database   (this one takes a few minutes)
+  then press Exit and close the DBTool. Your DB is: %s
+(Its working files are in %s; delete that folder afterwards.)'''
+
+
 class DBTool:
     def __init__(self, exe, seg_folder, log=print):
         from pywinauto import Application
@@ -165,15 +178,34 @@ class DBTool:
 
     def _select(self, col):
         rows = [i for i, t in enumerate(self._col(col)) if t]
-        for i in range(self.rows):
-            self.lv.deselect(i)
-        for i in rows:
-            self.lv.select(i)
-        return rows
+        for attempt in range(3):
+            for i in range(self.rows):
+                self.lv.deselect(i)
+            for i in rows:
+                self.lv.select(i)
+            time.sleep(0.5)
+            try:
+                n = self.lv.get_selected_count()
+            except Exception:                     # noqa: BLE001 - can't tell: trust it
+                return rows
+            if n == len(rows):
+                return rows
+            self.log('  selected %d of %d rows, selecting again' % (n, len(rows)))
+            time.sleep(2)
+        raise DBToolError('could not select the rows in the segmentation list')
 
-    def _run(self, button, done, timeout, what):
-        self.dlg.child_window(control_id=button).click()
-        t = time.time()
+    def _press(self, button):
+        """Press a dialog button with its WM_COMMAND: works whether or not the window has focus (a
+        simulated click sometimes never reached the DBTool and the build waited forever)."""
+        h = self._gui.GetDlgItem(self.dlg_handle, button)
+        self._gui.PostMessage(self.dlg_handle, self._con.WM_COMMAND, button & 0xFFFF, h)
+
+    def _run(self, button, done, timeout, what, progress=None, stall=180):
+        """Press button and wait for done(). progress() (a count) tells whether anything is happening:
+        nothing for `stall` seconds after a press -> press again, twice, then hand over to the user."""
+        self._press(button)
+        t = t_press = time.time()
+        presses, last = 1, (progress() if progress else None)
         while True:
             time.sleep(3)
             if not self._alive():
@@ -183,7 +215,8 @@ class DBTool:
                 # the previous step is still finishing (saving): dismiss, wait, press the button again
                 self._gui.PostMessage(mb[0].handle, self._con.WM_COMMAND, 1, 0)       # OK
                 time.sleep(5)
-                self.dlg.child_window(control_id=button).click()
+                self._press(button)
+                t_press = time.time()
                 continue
             if mb and 'want to continue' in mb[1]:
                 # "...already been segmented. Previous segmentation ... will be lost. Do you want to
@@ -196,6 +229,17 @@ class DBTool:
             n = done()
             if n is True:
                 return
+            if progress:
+                now = progress()
+                if now != last:
+                    last, t_press = now, time.time()
+                elif time.time() - t_press > stall:
+                    if presses >= 3:
+                        raise DBToolError('nothing happened after pressing "%s" %d times' % (what, presses))
+                    self.log('  no progress on "%s" for %d s, pressing it again' % (what, stall))
+                    self._press(button)
+                    presses += 1
+                    t_press = time.time()
             if time.time() - t > timeout:
                 raise DBToolError('timed out during: %s' % what)
 
@@ -203,8 +247,9 @@ class DBTool:
         rows = self._select(COL_STAT_TO_ADD)
         self.log('adding %d stationaries' % len(rows))
         if rows:
-            self._run(ADD_STAT, lambda: all(self._col(COL_STAT_ADDED)[i] for i in rows), 1800,
-                      'Add Stationaries To Database')
+            self._run(ADD_STAT, lambda: all(self._col(COL_STAT_ADDED)[i] for i in rows) or None, 1800,
+                      'Add Stationaries To Database',
+                      progress=lambda: sum(1 for i in rows if self._col(COL_STAT_ADDED)[i]))
             time.sleep(5)                        # it keeps saving for a moment after the list says YES
 
     def optimize_epr(self):
@@ -227,7 +272,7 @@ class DBTool:
             last[0] = n
             return n >= len(rows) or None
         if rows:
-            self._run(ADD_ART, done, 4 * 3600, 'Add Articulations To Database')
+            self._run(ADD_ART, done, 4 * 3600, 'Add Articulations To Database', progress=lambda: last[0], stall=300)
         failed = [i for i in rows if not self._col(COL_ART_ADDED)[i].upper().startswith('YES')]
         return failed
 
@@ -266,6 +311,9 @@ def build(exe, seg_folder, db_path, name=None, dictionary=None, language='Japane
             _boost(work, boosted)
             try:
                 failed = _build(exe, work, db_path, name, dictionary, language, log)
+            except DBToolHandoff:
+                work = None                  # the DBTool still uses it: keep it for the user
+                raise
             except DBToolError:
                 raise
             except Exception as ex:          # noqa: BLE001 - pywinauto loses a window now and then
@@ -280,7 +328,8 @@ def build(exe, seg_folder, db_path, name=None, dictionary=None, language='Japane
                 _boost(work, boosted)
                 failed = _build(exe, work, db_path, name, dictionary, language, log)
         finally:
-            shutil.rmtree(work, ignore_errors=True)
+            if work:
+                shutil.rmtree(work, ignore_errors=True)
         bad = octave_errors(db_path, seg_folder)
         new = {f: f0 for _, files in bad.values() for f, f0 in files if f not in boosted}
         if bad and (not new or attempt == 1):
@@ -351,17 +400,32 @@ def _build(exe, seg_folder, db_path, name, dictionary, language, log):
             t.quit()
         log('EVEC: renamed %d phoneme entries' % dbtool_io.patch_evec_names(os.path.abspath(db_path)))
         t = DBTool(exe, seg_folder, log)
+    step = 'creating the DB'
     try:
         if evec:
             t.load_db(db_path)
         else:
             t.new_db(dictionary, db_path, language)
+        step = 'opening Automatic Segmentation'
         t.open_auto_segmentation()
+        step = 'Add Stationaries To Database'
         t.add_stationaries()
+        step = 'Optimize EpR Guides'
         t.optimize_epr()
+        step = 'Add Articulations To Database'
         failed = t.add_articulations()
-    finally:
+    except DBToolError as ex:
+        if step.startswith(('Add', 'Optimize')) and t._alive():
+            # Leave the DBTool open on its list (and its files in place): the user can finish by hand.
+            # Closing it here used to delete the folder it was building from, so that failed too.
+            log('%s' % ex)
+            raise DBToolHandoff(HANDOFF % (step, os.path.abspath(db_path), seg_folder)) from ex
         t.close()
+        raise
+    except BaseException:
+        t.close()
+        raise
+    t.close()
     inf = os.path.join(os.path.abspath(db_path), 'singer.inf')
     if name and os.path.exists(inf):
         txt = open(inf, encoding='latin-1').read()

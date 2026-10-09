@@ -23,7 +23,7 @@ SETTINGS = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'uta
 sys.path.insert(0, ROOT)
 sys.path.insert(0, TOOLS)
 
-SAVED = ('bank', 'out', 'lang', 'colors', 'keep', 'splice', 'fill', 'normalize', 'derive', 'extend_dict', 'extras',
+SAVED = ('bank', 'out', 'dict', 'lang', 'colors', 'keep', 'splice', 'fill', 'normalize', 'derive', 'extend_dict', 'extras',
          'merge_groups', 'brighten', 'avoid', 'db_name', 'db_path', 'db_lang', 'dbtool', 'slot', 'song',
          'suffixes')
 
@@ -109,7 +109,7 @@ class App(tk.Tk):
     # ------------------------------------------------------------------ state
     def _vars(self):
         S, B, I = tk.StringVar, tk.BooleanVar, tk.IntVar
-        self.v.update(bank=S(), out=S(), lang=S(value='auto'), colors=S(value='main'), keep=I(value=1),
+        self.v.update(bank=S(), out=S(), dict=S(), lang=S(value='auto'), colors=S(value='main'), keep=I(value=1),
                       splice=B(value=True), fill=B(value=True), normalize=B(value=True), derive=B(value=True),
                       extend_dict=B(value=True), merge_groups=B(value=False), extras=B(value=True),
                       brighten=S(), avoid=S(),
@@ -159,6 +159,12 @@ class App(tk.Tk):
         ttk.Button(top, text='Browse…', command=self.pick_bank).grid(row=0, column=2)
         ttk.Label(top, textvariable=self.info, foreground='#555').grid(row=1, column=1, columnspan=2,
                                                                       sticky='w', padx=6, pady=(2, 0))
+        ttk.Label(top, text='Phonetic dictionary', style='Head.TLabel').grid(row=2, column=0, sticky='w', pady=(6, 0))
+        ttk.Entry(top, textvariable=self.v['dict']).grid(row=2, column=1, sticky='ew', padx=6, pady=(6, 0))
+        ttk.Button(top, text='Browse…', command=self.pick_dict).grid(row=2, column=2, pady=(6, 0))
+        ttk.Label(top, text='from the devkit: Japanese Dictionary\\Japanese_Dictionary.txt (English: English '
+                            'Dictionary\\english_phonetic_dictionary_20061220.txt). Found automatically when it can be.',
+                  foreground='#777').grid(row=3, column=1, columnspan=2, sticky='w', padx=6)
         top.columnconfigure(1, weight=1)
 
         nb = ttk.Notebook(self)
@@ -216,6 +222,7 @@ class App(tk.Tk):
         right.grid(row=0, column=1, sticky='nsew')
         right.columnconfigure(1, weight=1)
         self._row(right, 0, 'Output folder', self.v['out'], self.pick_out)
+        right.rowconfigure(1, minsize=0)
 
         o = ttk.Frame(right)
         o.grid(row=1, column=0, columnspan=3, sticky='ew', pady=4)
@@ -359,6 +366,22 @@ class App(tk.Tk):
             name = self.v['db_name'].get() or 'Singer'
             self.v['db_path'].set(os.path.join(os.path.normpath(d), name, name))
 
+    def pick_dict(self):
+        p = filedialog.askopenfilename(title='VOCALOID phonetic dictionary (.txt from the devkit)',
+                                       filetypes=[('Phonetic dictionary', '*.txt'), ('All files', '*.*')])
+        if p:
+            self.v['dict'].set(os.path.normpath(p))
+
+    def _find_dict(self, lang):
+        """Fill in the devkit dictionary for lang unless the user chose one for that language."""
+        from u2v import dbtool_io
+        cur = self.v['dict'].get()
+        if cur and os.path.exists(cur) and dbtool_io.dictionary_language(cur) in (lang, None):
+            return
+        roots = [DEVKIT, os.path.dirname(self.v['dbtool'].get()), os.path.dirname(DEVKIT)]
+        found = dbtool_io.find_dictionary(lang, roots)
+        self.v['dict'].set(found or '')
+
     def pick_dbtool(self):
         p = filedialog.askopenfilename(title='VocaloidDBTool3.exe', filetypes=[('DBTool', '*.exe')])
         if p:
@@ -390,6 +413,8 @@ class App(tk.Tk):
         self.detected_lang = P.detect_language([e.alias for e in entries])
         lang = {'ja': 'Japanese', 'en': 'English'}.get(self.detected_lang, self.detected_lang)
         self.info.set('%d oto entries in %d folder/suffix group(s), looks %s' % (len(entries), len(count), lang))
+        if self.detected_lang in ('ja', 'en'):
+            self._find_dict(self.detected_lang)
         if self.detected_lang == 'en':
             self.v['db_lang'].set('English')
         elif self.detected_lang == 'ja':
@@ -400,6 +425,10 @@ class App(tk.Tk):
         v = self.v
         args = ['convert', v['bank'].get(), v['out'].get(), '--lang', v['lang'].get(), '--colors', v['colors'].get(),
                 '--keep', v['keep'].get()]
+        if v['dict'].get():
+            if not os.path.exists(v['dict'].get()):
+                raise ValueError('The phonetic dictionary file does not exist:\n%s' % v['dict'].get())
+            args += ['--dict', v['dict'].get()]
         sel = [self.groups[i][0] for i in self.glist.curselection()]
         if sel and len(sel) < len(self.groups):
             args += ['--groups', '^(%s)$' % '|'.join(re.escape(g) for g in sel)]
@@ -426,6 +455,11 @@ class App(tk.Tk):
             return messagebox.showwarning('Convert', 'Choose an UTAU voicebank folder first.')
         if not self.v['out'].get():
             return messagebox.showwarning('Convert', 'Choose an output folder.')
+        if not self.v['dict'].get():
+            return messagebox.showwarning(
+                'Convert', 'No phonetic dictionary found.\n\nIt comes with the VOCALOID3 devkit: '
+                '"Japanese Dictionary\\Japanese_Dictionary.txt" (English banks: "English Dictionary\\'
+                'english_phonetic_dictionary_20061220.txt").\n\nPress Browse… next to "Phonetic dictionary" and pick it.')
         try:
             args = self._convert_args()
         except ValueError as ex:
@@ -444,7 +478,9 @@ class App(tk.Tk):
     def build(self):
         out, db = self.v['out'].get(), self.v['db_path'].get()
         if not os.path.exists(os.path.join(out, 'dictionary.txt')):
-            return messagebox.showwarning('Build', 'Convert the bank first (no dictionary.txt in the output folder).')
+            return messagebox.showwarning('Build', 'The output folder has no dictionary.txt, so it was not converted '
+                                          '(or the conversion could not find the phonetic dictionary).\n\n'
+                                          'Set "Phonetic dictionary" at the top and press Convert again.')
         if not db:
             return messagebox.showwarning('Build', 'Enter where to create the DB (folder\\Name).')
         if os.path.exists(db + '.tree'):

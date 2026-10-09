@@ -147,6 +147,15 @@ next to it as `<folder>__orig`.
 
 ## 🩹 Troubleshooting
 
+- **"could not find the phonetic dictionary" / "no dictionary.txt" / "validated it but it says the
+  dictionary is missing".** The converter needs the devkit's dictionary: `Japanese Dictionary\Japanese_Dictionary.txt`
+  (English banks: `English Dictionary\english_phonetic_dictionary_20061220.txt`). Put the `utau2vocaloid`
+  folder inside the devkit folder and it's found automatically, or pick it under **Phonetic dictionary** in
+  the GUI (`--dict` on the command line). Then **Convert again** before building.
+- **The DBTool shows the list (all those "Yes"es) and then nothing happens.** Since 1.0.1 the build presses
+  the buttons more reliably and presses again if nothing starts. If it still gets stuck, it **leaves the DBTool
+  open** and prints what to click: select every row → *Add Stationaries To Database* → *Optimize EpR Guides*
+  → *Add Articulations To Database* → *Exit*. (Don't close the DBTool while the log says it's working.)
 - **"VOCALOID4 is already running."** Yes. Yes it is. Close it, then render.
 - **The DBTool window is clicking by itself.** That's us. Hands off the keyboard for a minute.
 - **A syllable sounds weird.** Look it up in `report.txt` (skipped entries + reasons). If one unit is just
